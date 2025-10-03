@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import { Client } from 'pg';
-import { ServerClient } from 'postmark'; // using the 'postmark' package
+import { ServerClient } from 'postmark';
 import crypto from 'crypto';
 
 const {
@@ -14,21 +14,15 @@ const {
   MAIL_FROM,
   PUBLIC_WEB_BASE,
   PUBLIC_API_BASE,
-  PORT,
-  DEV_ECHO_LOGIN_CODES, // "true" in dev to echo login codes
+  PORT
 } = process.env;
 
 // --- DB ---
-const db = new Client({
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const db = new Client({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
 await db.connect();
 
 // --- Mail ---
-if (MAIL_PROVIDER !== 'postmark') {
-  console.warn('MAIL_PROVIDER is not "postmark" (value:', MAIL_PROVIDER, ')');
-}
+if (MAIL_PROVIDER !== 'postmark') console.warn('MAIL_PROVIDER is not "postmark"');
 const postmark = new ServerClient(MAIL_API_KEY);
 
 // --- App ---
@@ -44,25 +38,13 @@ const addMinutes = (m) => new Date(Date.now() + m * 60000);
 // Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Debug: DB ping
-app.get('/debug/db', async (_req, res) => {
-  try {
-    const r = await db.query('select now() as now');
-    res.json({ ok: true, now: r.rows[0].now });
-  } catch (e) {
-    console.error('DB PING ERROR:', e);
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-
-// === Auth: request login code ===
+// Auth: request code  (includes dev_code + logs in non-production)
 app.post('/v1/auth/request', async (req, res) => {
   try {
     const { email } = req.body || {};
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return res.status(400).json({ error: 'Invalid email' });
     }
-
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const codeHash = hashCode(code);
     const expiresAt = addMinutes(10).toISOString();
@@ -72,34 +54,33 @@ app.post('/v1/auth/request', async (req, res) => {
       [email.toLowerCase(), codeHash, expiresAt]
     );
 
-    // Attempt to email (best-effort in dev)
     try {
       await postmark.sendEmail({
         From: MAIL_FROM,
         To: email,
         Subject: 'Your Subsly login code',
         TextBody: `Your code is ${code}. It expires in 10 minutes.`,
-        MessageStream: 'outbound', // Postmark transactional stream
+        MessageStream: 'outbound'
       });
     } catch (mailErr) {
-      console.warn('Mail send failed (dev tolerant):', mailErr?.message || mailErr);
+      console.warn('MAIL SEND FAILED (dev will still get code in JSON/log):', mailErr?.message || mailErr);
     }
 
-    // DEV convenience: echo code if enabled
-    const echo = (DEV_ECHO_LOGIN_CODES || '').toLowerCase() === 'true';
-    if (echo) {
-      console.log('[DEV] login code for', email, '=>', code);
-      return res.json({ ok: true, code, expires_at: expiresAt });
-    }
+    console.log(`[AUTH] Sent code ${code} to ${email} (expires ${expiresAt})`);
 
-    return res.json({ ok: true, expires_at: expiresAt });
+    const includeDevCode = (process.env.NODE_ENV !== 'production');
+    return res.json({
+      ok: true,
+      expires_at: expiresAt,
+      ...(includeDevCode ? { dev_code: code } : {})
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'Server error' });
   }
 });
 
-// === Auth: verify login code ===
+// Auth: verify code
 app.post('/v1/auth/verify', async (req, res) => {
   try {
     const { email, code, username } = req.body || {};
@@ -114,7 +95,6 @@ app.post('/v1/auth/verify', async (req, res) => {
         LIMIT 1`,
       [email.toLowerCase(), codeHash]
     );
-
     const row = rows[0];
     if (!row) return res.status(401).json({ error: 'Invalid code' });
     if (row.consumed_at) return res.status(401).json({ error: 'Code already used' });
@@ -140,7 +120,7 @@ app.post('/v1/auth/verify', async (req, res) => {
   }
 });
 
-// === Auth middleware ===
+// auth middleware
 const auth = (req, res, next) => {
   const authz = req.headers.authorization || '';
   const token = authz.startsWith('Bearer ') ? authz.slice(7) : null;
@@ -154,7 +134,7 @@ const auth = (req, res, next) => {
   }
 };
 
-// === Start/open DM by username ===
+// start/open DM by username
 app.post('/v1/conversations', auth, async (req, res) => {
   try {
     const { username } = req.body || {};
@@ -183,7 +163,7 @@ app.post('/v1/conversations', auth, async (req, res) => {
   }
 });
 
-// === List messages ===
+// list messages
 app.get('/v1/messages', auth, async (req, res) => {
   try {
     const { conversation_id, after, limit = 50 } = req.query;
@@ -204,7 +184,7 @@ app.get('/v1/messages', auth, async (req, res) => {
   }
 });
 
-// === Send message (text-only MVP) ===
+// send message (text only for MVP)
 app.post('/v1/messages', auth, async (req, res) => {
   try {
     const { conversation_id, kind, text } = req.body || {};
@@ -225,6 +205,16 @@ app.post('/v1/messages', auth, async (req, res) => {
   }
 });
 
-// --- Start server ---
-const port = PORT || 8080; // Render provides PORT
+// debug
+app.get('/debug/db', async (req, res) => {
+  try {
+    const r = await db.query('select now() as now');
+    res.json({ ok: true, now: r.rows[0].now });
+  } catch (e) {
+    console.error('DB PING ERROR:', e);
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+const port = PORT || 8080;
 app.listen(port, () => console.log(`Subsly API listening on ${port}`));
