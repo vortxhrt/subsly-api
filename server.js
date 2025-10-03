@@ -196,3 +196,14 @@ app.post('/v1/messages', auth, async (req, res) => {
 
 const port = PORT || 8080;            // Render sets PORT; we honor it.
 app.listen(port, () => console.log(`Subsly API listening on ${port}`));
+
+app.get('/debug/db', async (req, res) => {
+  try {
+    const r = await db.query('select now() as now');
+    res.json({ ok: true, now: r.rows[0].now });
+  } catch (e) {
+    console.error('DB PING ERROR:', e);
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
