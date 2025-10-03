@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import { Client } from 'pg';
-import { ServerClient } from '@postmark/client';
+import { ServerClient } from 'postmark';   // ✅ FIXED: use 'postmark' package
 import crypto from 'crypto';
 
 const {
@@ -194,5 +194,5 @@ app.post('/v1/messages', auth, async (req, res) => {
   }
 });
 
-const port = PORT || 8080;
+const port = PORT || 8080;            // Render sets PORT; we honor it.
 app.listen(port, () => console.log(`Subsly API listening on ${port}`));
